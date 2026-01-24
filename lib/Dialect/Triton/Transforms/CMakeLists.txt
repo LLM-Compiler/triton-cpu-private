@@ -9,6 +9,7 @@ add_triton_library(TritonTransforms
   ReorderBroadcast.cpp
   RewriteTensorPointer.cpp
   TritonCPUBlockPacking.cpp
+  # SoftwarePrefetch.cpp
 
   DEPENDS
   TritonTransformsIncGen
@@ -18,4 +19,8 @@ add_triton_library(TritonTransforms
   MLIRPass
   MLIRTransformUtils
   TritonIR
+  # MLIRFunc
+  # MLIRArith
+  # MLIRMemRef
+  # MLIRSCF
 )

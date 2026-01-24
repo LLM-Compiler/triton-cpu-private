@@ -45,8 +45,12 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 
+std::unique_ptr<OperationPass<ModuleOp>> createRegisterTilingPass();
+
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotOpToUkernelOps(
     Ukernels ukernels = mlir::triton::cpu::Ukernels::OneDNN);
+
+std::unique_ptr<OperationPass<ModuleOp>> createEpilogueFusionPass();
 
 #define GEN_PASS_REGISTRATION
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"

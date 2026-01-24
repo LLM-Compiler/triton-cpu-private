@@ -8,7 +8,9 @@ add_triton_library(TritonCPUTransforms
     ConvertDotProduct.cpp
     ConvertUnsupportedOps.cpp
     DecomposeFpConversions.cpp
+    FuseDotBias.cpp
     OptimizeMasks.cpp
+    RegisterTiling.cpp
 
     DEPENDS
     TritonCPUTransformsPassIncGen

@@ -107,6 +107,12 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_optimize_masks", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createOptimizeMasks());
   });
+  m.def("add_register_tiling", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createRegisterTilingPass());
+  });
+  m.def("add_epilogue_fusion", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createEpilogueFusionPass());
+  });
   m.def("add_convert_dot_product", [](mlir::PassManager &pm,
                                       bool useHorizontalSum) {
     pm.addPass(mlir::triton::cpu::createConvertDotProduct(useHorizontalSum));

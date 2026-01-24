@@ -187,4 +187,28 @@ def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def EpilogueFusion : Pass<"triton-cpu-epilogue-fusion", "mlir::ModuleOp"> {
+    let summary = "Fuses dot product with subsequent element-wise ops";
+    let description = [{
+        Detects patterns like `add(dot(a, b, c), bias)` and replaces them 
+        with `dot(a, b, add(c, bias))` to enable fused epilogue operations.
+    }];
+    
+    let constructor = "mlir::triton::cpu::createEpilogueFusionPass()";
+    let dependentDialects = [
+        "mlir::arith::ArithDialect",
+        "mlir::triton::cpu::TritonCPUDialect"
+    ];
+}
+
+def TritonCPURegisterTiling : Pass<"triton-cpu-register-tiling", "mlir::ModuleOp"> {
+    let summary = "Tile loops to fit in CPU registers.";
+    let description = [{
+        This pass decomposes block operations into micro-tiles to improve register reuse
+        and avoid spilling.
+    }];
+    let constructor = "mlir::triton::cpu::createRegisterTilingPass()";
+    let dependentDialects = ["mlir::triton::TritonDialect", "mlir::vector::VectorDialect"];
+}
+
 #endif

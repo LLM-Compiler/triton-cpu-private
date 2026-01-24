@@ -158,6 +158,13 @@ class CPUBackend(BaseBackend):
         passes.common.add_inliner(pm)
         passes.ttir.add_combine(pm)
         passes.ttir.add_triton_cpu_block_packing(pm)
+        # Prefetch pass is optional - only add if available
+        #if hasattr(passes.ttir, 'add_triton_cpu_prefetch'):
+            #print("Adding software prefetch")
+            #passes.ttir.add_triton_cpu_prefetch(pm)
+            #print("End of software prefetch")
+        #else:
+            #print("Skipping software prefetch (not available in this build)")
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_reorder_broadcast(pm)
         passes.common.add_cse(pm)
@@ -196,6 +203,14 @@ class CPUBackend(BaseBackend):
         pm.enable_debug()
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
+        # Register Tiling Pass - decompose blocks to fit in registers
+        if hasattr(cpu.passes.ttcpuir, 'add_register_tiling'):
+            cpu.passes.ttcpuir.add_register_tiling(pm)
+        # Epilogue fusion pass - only add if available (requires build)
+        if hasattr(cpu.passes.ttcpuir, 'add_epilogue_fusion'):
+            cpu.passes.ttcpuir.add_epilogue_fusion(pm)
+        else:
+            print("Warning: Epilogue fusion pass not available (requires build)")
         passes.common.add_canonicalizer(pm)
         if (ukernels := opt.get_ukernels()):
             # For further analysis simplification

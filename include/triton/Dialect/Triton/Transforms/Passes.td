@@ -72,4 +72,19 @@ def TritonLoopInvariantCodeMotion : Pass</*cli-arg*/"triton-licm", /*Op*/"mlir::
   let dependentDialects = ["mlir::triton::TritonDialect"];
 }
 
+// def TritonSoftwarePrefetch : Pass</*cli-arg*/"triton-software-prefetch", /*Op*/"mlir::ModuleOp"> {
+//   let summary = "Injects software prefetch instructions for memory operations in loops.";
+//   let description = [{
+//     This pass analyzes loops and injects memref.prefetch operations
+//     to prefetch data before it is accessed, aiming to reduce memory
+//     latency on CPU.
+//   }];
+//   let options = [
+//     Option<"prefetchDistance", "prefetch-distance", "unsigned", /*default=*/"32",
+//            "Software prefetch distance for loads.">
+//   ];
+//   let constructor = "mlir::triton::createSoftwarePrefetchPass()";
+//   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::memref::MemRefDialect"];
+// }
+
 #endif
