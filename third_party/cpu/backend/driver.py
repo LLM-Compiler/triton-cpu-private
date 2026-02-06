@@ -25,7 +25,13 @@ except AttributeError:
 
 include_dirs = []
 library_dirs = [_triton_C_dir]
-libraries = ["stdc++"]
+libraries = ["stdc++", "numa"]
+
+def get_type_size(ty):
+    if ty.startswith('*'): return 8
+    mapping = {"i1": 1, "i8": 1, "u8": 1, "i16": 2, "u16": 2, "fp16": 2, "bf16": 2,
+               "i32": 4, "u32": 4, "fp32": 4, "f32": 4, "i64": 8, "u64": 8, "fp64": 8}
+    return mapping.get(ty, 1)
 
 # Skip non-existent paths
 sys_include_dir = os.path.join(_dirname, "include")
@@ -112,7 +118,7 @@ def ty_to_cpp(ty):
     }[ty]
 
 
-def make_launcher(constants, signature, ids):
+def make_launcher(constants, signature, ids, algo_info=None):
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors.
     def _serialize_signature(sig):
@@ -169,6 +175,31 @@ def make_launcher(constants, signature, ids):
     kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args)
     kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 6)
 
+    # Generate binding code if algo_info is provided
+    binding_code = ""
+    if algo_info and algo_info.get("block_size", 0) > 0 and algo_info.get("ptr_idx") is not None:
+        ptr_idx = algo_info["ptr_idx"]
+        blk = algo_info["block_size"]
+        esz = algo_info["element_size"]
+        ptr_arg = f"arg{ptr_idx}"
+        # We need to ensure logic is safe. arg{ptr_idx} is a void* in C++.
+        # We cast to char* for arithmetic.
+        binding_code = f"""
+        if (my_start < my_end) {{
+             const auto [bx, by, bz] = all_grids[my_start];
+             // NUMA Binding Optimization
+             void* base_ptr = (void*) {ptr_arg};
+             if (base_ptr) {{
+                 size_t offset = (size_t)bx * {blk} * {esz};
+                 void* target_addr = (char*)base_ptr + offset;
+                 int node = get_memory_node(target_addr);
+                 if (node >= 0) {{
+                     numa_run_on_node(node);
+                 }}
+             }}
+        }}
+        """
+
     # generate glue code
     src = f"""
 #include <algorithm>
@@ -184,6 +215,8 @@ def make_launcher(constants, signature, ids):
 #include <stdio.h>
 #include <string>
 #include <memory>
+#include <numa.h>
+#include <numaif.h>
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
@@ -206,6 +239,18 @@ inline std::optional<int64_t> getIntEnv(const std::string &env) {{
   if (endptr == cstr)
     assert(false && "invalid integer");
   return result;
+}}
+
+// 1. Function to find which NUMA node a virtual address physically resides on
+int get_memory_node(void* ptr) {{
+    int node = -1;
+    // MPOL_F_NODE: return the node ID of the address
+    // MPOL_F_ADDR: specify we are querying a specific address, not policy
+    if (get_mempolicy(&node, NULL, 0, ptr, MPOL_F_NODE | MPOL_F_ADDR) < 0) {{
+        // perror("get_mempolicy failed");
+        return -1;
+    }}
+    return node;
 }}
 
 using kernel_ptr_t = void(*)({kernel_fn_arg_types});
@@ -282,6 +327,10 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int 
 
   // Don't pay OMP overhead price when a single thread is used.
   if (max_threads == 1) {{
+       int tid = 0;
+       size_t my_start = 0;
+       size_t my_end = N;
+       {binding_code}
     for (size_t i = 0; i < N; ++i) {{
       const auto [x, y, z] = all_grids[i];
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
@@ -289,13 +338,28 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int 
     return;
   }}
 
-  // For now, use the default chunk size, total iterations / max_threads.
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) num_threads(max_threads)
+#pragma omp parallel num_threads(max_threads)
 #endif // _OPENMP
-  for (size_t i = 0; i < N; ++i) {{
-    const auto [x, y, z] = all_grids[i];
-    (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
+  {{
+     int tid = 0;
+     int used_nt = 1;
+#ifdef _OPENMP
+     tid = omp_get_thread_num();
+     used_nt = omp_get_num_threads();
+#endif
+     
+     size_t chunk_size = N / used_nt;
+     size_t remainder = N % used_nt;
+     size_t my_start = tid * chunk_size + (tid < remainder ? tid : remainder);
+     size_t my_end = my_start + chunk_size + (tid < remainder ? 1 : 0);
+
+     {binding_code}
+
+     for (size_t i = my_start; i < my_end; ++i) {{
+       const auto [x, y, z] = all_grids[i];
+       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
+     }}
   }}
 }}
 
@@ -386,7 +450,31 @@ class CPULauncher(object):
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        src = make_launcher(constants, signature, ids)
+        
+        # Extract Algo Info for optimizations
+        algo_info = {}
+        block_size = 0
+        if hasattr(src, "fn"):
+            arg_names = src.fn.arg_names
+            # Heuristic to find block size
+            for i, name in enumerate(arg_names):
+                if name in ["BLOCK_SIZE", "BLOCK_M", "BLOCK_X", "XBLOCK"]:
+                    if i in constants:
+                        block_size = constants[i]
+                        break
+        algo_info["block_size"] = block_size
+        
+        algo_info["ptr_idx"] = None
+        algo_info["element_size"] = 1
+        sorted_indices = sorted(signature.keys())
+        for idx in sorted_indices:
+            ty = signature[idx]
+            if ty.startswith('*'):
+                algo_info["ptr_idx"] = idx
+                algo_info["element_size"] = get_type_size(ty[1:])
+                break
+        print(algo_info)
+        src = make_launcher(constants, signature, ids, algo_info)
         mod = compile_module_from_src(src, "__triton_cpu_launcher")
         self.launch = mod.launch
 
