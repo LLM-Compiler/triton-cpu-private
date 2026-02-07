@@ -99,6 +99,8 @@ class CPUUtils(object):
 def ty_to_cpp(ty):
     if ty[0] == '*':
         return "void*"
+    if ty == "constexpr":
+        return "PyObject*"
     return {
         "i1": "int32_t",
         "i8": "int8_t",
@@ -159,19 +161,36 @@ def make_launcher(constants, signature, ids, algo_info=None):
         }[ty_to_cpp(ty)]
 
     # Filter out constexpr from args_format since they're not passed at runtime
-    args_format = ''.join([format_of(ty) for ty in signature.values() if ty != "constexpr"])
+    # Note: constants keys might be tuples like (4,) instead of int 4
+    def is_constant(i):
+        return i in constants or (i,) in constants
+
+    # We must strict check the filtering. If JIT passes it, we must parse it.
+    # Empirically, JIT is passing constexpr args in this environment.
+    # So we include everything in parsing.
+    args_format = ''.join([format_of(signature[i]) for i in sorted(signature.keys())])
+    
+    # DEBUG PRINT
+#    print(f"DEBUG: constants keys: {list(constants.keys())}")
+#    print(f"DEBUG: signature keys: {list(signature.keys())}")
+#    print(f"DEBUG: generated args_format: {args_format} (len={len(args_format)})")
+    
     format = "iiiOKOOOO" + args_format
 
     signature = ','.join(map(_serialize_signature, signature.values()))
     signature = list(filter(bool, signature.split(',')))
     signature = {i: s for i, s in enumerate(signature)}
 
-    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
+    # Same for declarations: Declare ALL arguments that JIT passes
+    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
 
-    # arg_ptrs_list must match arg_decls - only include non-constexpr args
-    signature_without_constexprs = {i: ty for i, ty in signature.items() if ty != "constexpr"}
-    arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature_without_constexprs.keys())
-    kernel_fn_args = [i for i, ty in signature.items() if i not in constants and ty != "constexpr"]
+    # arg_ptrs_list must match arg_decls
+    # We use full signature here so ParseTuple can fill them all
+    arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature.keys())
+    
+    # But for invalidating/using in kernel, we might still skip constants? 
+    # kernel_fn_args is what we pass to the actual kernel function.
+    kernel_fn_args = [i for i, ty in signature.items() if not is_constant(i) and ty != "constexpr"]
     kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args)
     kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 6)
 
@@ -194,6 +213,7 @@ def make_launcher(constants, signature, ids, algo_info=None):
                  void* target_addr = (char*)base_ptr + offset;
                  int node = get_memory_node(target_addr);
                  if (node >= 0) {{
+                     printf("[TritonCPU] Thread bound to Node %d for addr %p\\n", node, target_addr);
                      numa_run_on_node(node);
                  }}
              }}
@@ -397,8 +417,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
       return NULL;
   }}
 
-  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature_without_constexprs.items()])};
-  run_omp_kernels(gridX, gridY, gridZ, num_threads, kernel_ptr {(', ' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"arg{i}" for i, ty in signature_without_constexprs.items())) if len(signature_without_constexprs) > 0 else ''});
+  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if signature[i][0] == "*" else "" for i in kernel_fn_args])};
+  run_omp_kernels(gridX, gridY, gridZ, num_threads, kernel_ptr {(', ' + ', '.join(f"ptr_info{i}.dev_ptr" if signature[i][0]=="*" else f"arg{i}" for i in sorted(signature.keys()))) if len(signature) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);
@@ -462,6 +482,9 @@ class CPULauncher(object):
                     if i in constants:
                         block_size = constants[i]
                         break
+                    elif (i,) in constants:
+                         block_size = constants[(i,)]
+                         break
         algo_info["block_size"] = block_size
         
         algo_info["ptr_idx"] = None
