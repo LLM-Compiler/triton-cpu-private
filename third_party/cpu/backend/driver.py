@@ -507,13 +507,38 @@ class CPULauncher(object):
                 algo_info["ptr_idx"] = idx
                 algo_info["element_size"] = get_type_size(ty[1:])
                 break
-        print(algo_info)
-        src = make_launcher(constants, signature, ids, algo_info)
-        mod = compile_module_from_src(src, "__triton_cpu_launcher")
+        
+        src_code = make_launcher(constants, signature, ids, algo_info)
+        mod = compile_module_from_src(src_code, "__triton_cpu_launcher")
+        
         self.launch = mod.launch
+        self.constants = constants
 
     def __call__(self, *args, **kwargs):
-        self.launch(*args, **kwargs)
+        # usage: self.launch(gridX, gridY, gridZ, stream, kernel_ptr, 
+        #                    kernel_metadata, launch_metadata, enter_hook, exit_hook,
+        #                    arg0, arg1, ...)
+        # CompildedKernel.run typically passes ALL arguments including constants.
+        # But make_launcher generates a C function that DOES NOT accept constants.
+        # So we must filter them out.
+        
+        # There are 9 fixed arguments before kernel arguments
+        if len(args) < 9:
+            # Fallback for unexpected call convention?
+            # But the fix for TypeError relies on this assumption.
+            self.launch(*args, **kwargs) 
+            return
+
+        fixed_args = args[:9]
+        kernel_args = args[9:]
+        
+        filtered_kernel_args = []
+        for i, arg in enumerate(kernel_args):
+            if i not in self.constants and (i,) not in self.constants:
+                filtered_kernel_args.append(arg)
+                
+        self.launch(*fixed_args, *filtered_kernel_args)
+
 
 
 class CPUDeviceInterface:
