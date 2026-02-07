@@ -168,12 +168,16 @@ def make_launcher(constants, signature, ids, algo_info=None):
     # We must strict check the filtering. If JIT passes it, we must parse it.
     # Empirically, JIT is passing constexpr args in this environment.
     # So we include everything in parsing.
-    args_format = ''.join([format_of(signature[i]) for i in sorted(signature.keys())])
+    # UPDATE: When using Torch Inductor, JIT behavior might differ relative to pure Triton JIT.
+    # If using inductor, constants might NOT be passed.
+    # We should detect if we are running under Inductor or manual JIT?
+    # Or, we can just rely on the fact that Inductor always seems to not pass constexprs.
     
-    # DEBUG PRINT
-#    print(f"DEBUG: constants keys: {list(constants.keys())}")
-#    print(f"DEBUG: signature keys: {list(signature.keys())}")
-#    print(f"DEBUG: generated args_format: {args_format} (len={len(args_format)})")
+    # Let's revert to filtering out constants for parsing logic, similar to how official backends might do it.
+    filtered_signature_keys = [i for i in sorted(signature.keys()) if not is_constant(i)]
+    
+    # args_format = ''.join([format_of(signature[i]) for i in sorted(signature.keys())])
+    args_format = ''.join([format_of(signature[i]) for i in filtered_signature_keys])
     
     format = "iiiOKOOOO" + args_format
 
@@ -181,17 +185,24 @@ def make_launcher(constants, signature, ids, algo_info=None):
     signature = list(filter(bool, signature.split(',')))
     signature = {i: s for i, s in enumerate(signature)}
 
-    # Same for declarations: Declare ALL arguments that JIT passes
-    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    # Same for declarations: Declare ALL arguments that JIT passes -> NO, only runtime args
+    # arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    arg_decls = ', '.join(f"{ty_to_cpp(signature[i])} arg{i}" for i in filtered_signature_keys)
 
     # arg_ptrs_list must match arg_decls
     # We use full signature here so ParseTuple can fill them all
-    arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature.keys())
+    # arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature.keys())
+    arg_ptrs_list = ', '.join(f"&arg{i}" for i in filtered_signature_keys)
     
     # But for invalidating/using in kernel, we might still skip constants? 
     # kernel_fn_args is what we pass to the actual kernel function.
-    kernel_fn_args = [i for i, ty in signature.items() if not is_constant(i) and ty != "constexpr"]
+    
+    # kernel_fn_args = [i for i in sorted(signature.keys()) if not is_constant(i)]
+    kernel_fn_args = filtered_signature_keys
     kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args)
+    # The error was here: running run_omp_kernels with signature arg types, but we filtered them in arg_decls
+    # run_omp_kernels definition uses arg_decls from filtered_signature_keys.
+    # So the types list used for function pointer casting must also match filtered_signature_keys.
     kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 6)
 
     # Generate binding code if algo_info is provided
@@ -418,7 +429,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
 
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if signature[i][0] == "*" else "" for i in kernel_fn_args])};
-  run_omp_kernels(gridX, gridY, gridZ, num_threads, kernel_ptr {(', ' + ', '.join(f"ptr_info{i}.dev_ptr" if signature[i][0]=="*" else f"arg{i}" for i in sorted(signature.keys()))) if len(signature) > 0 else ''});
+  run_omp_kernels(gridX, gridY, gridZ, num_threads, kernel_ptr {(', ' + ', '.join(f"ptr_info{i}.dev_ptr" if signature[i][0]=="*" else f"arg{i}" for i in kernel_fn_args)) if len(kernel_fn_args) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);
