@@ -79,11 +79,11 @@ private:
     Location loc = dot2.getLoc();
 
     // 1. Context & Types
-    Type elemType = q.getType().cast<RankedTensorType>().getElementType();
+    Type elemType = mlir::cast<RankedTensorType>(q.getType()).getElementType();
     
     // Helper to get shape
     auto getShape = [](Value val) {
-        return val.getType().cast<RankedTensorType>().getShape();
+        return mlir::cast<RankedTensorType>(val.getType()).getShape();
     };
     
     ArrayRef<int64_t> qRef = getShape(q); // [M, D] (Assume 2D for simplicity in logic)
@@ -112,7 +112,7 @@ private:
     // 2. Allocations
     // We need MemRefs for the loops. Cast tensors to MemRefs.
     auto toMemRef = [&](Value tensor) -> Value {
-        RankedTensorType tt = tensor.getType().cast<RankedTensorType>();
+        RankedTensorType tt = mlir::cast<RankedTensorType>(tensor.getType());
         MemRefType mt = MemRefType::get(tt.getShape(), tt.getElementType());
         // Use UnrealizedConversionCast as a bridge to standard dialects
         auto cast = builder.create<mlir::UnrealizedConversionCastOp>(loc, mt, tensor);
@@ -276,7 +276,7 @@ private:
 
     // 4. Replacement
     // Cast Output MemRef back to Tensor
-    RankedTensorType resultTensorType = dot2.getResult().getType().cast<RankedTensorType>();
+    RankedTensorType resultTensorType = mlir::cast<RankedTensorType>(dot2.getResult().getType());
     Value finalTensor = builder.create<mlir::UnrealizedConversionCastOp>(loc, resultTensorType, resultBuf).getResult(0);
     
     dot2.replaceAllUsesWith(finalTensor);
