@@ -187,4 +187,10 @@ def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def FlashAttentionFusion : Pass<"triton-cpu-flash-attention-fusion", "mlir::ModuleOp"> {
+    let summary = "Fuse attention pattern (Dot-Softmax-Dot) into tiled loop nest";
+    let constructor = "mlir::triton::cpu::createFlashAttentionFusionPass()";
+    let dependentDialects = ["mlir::triton::TritonDialect", "mlir::triton::cpu::TritonCPUDialect", "mlir::scf::SCFDialect", "mlir::vector::VectorDialect"];
+}
+
 #endif

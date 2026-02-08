@@ -48,6 +48,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotOpToUkernelOps(
     Ukernels ukernels = mlir::triton::cpu::Ukernels::OneDNN);
 
+std::unique_ptr<OperationPass<ModuleOp>> createFlashAttentionFusionPass();
+
 #define GEN_PASS_REGISTRATION
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 
