@@ -7,6 +7,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/Support/raw_ostream.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonCPU/IR/Dialect.h"
 
@@ -30,6 +31,9 @@ class FlashAttentionFusion : public triton::cpu::impl::FlashAttentionFusionBase<
 public:
   void runOnOperation() override {
     ModuleOp mod = getOperation();
+    llvm::errs() << "[FlashAttentionFusion] Pass started.\n";
+
+    bool fused = false;
 
     // Scan for the attention pattern: Dot -> Softmax -> Dot
     mod.walk([&](triton::DotOp dot2) {
@@ -46,10 +50,16 @@ public:
       // We have identified the components: Q, K, V
       // dot1 = Q @ K
       // dot2 = Softmax(dot1) @ V
+      llvm::errs() << "[FlashAttentionFusion] Found candidate pattern! Fusing...\n";
+      fused = true;
       
       // Perform Fusion
       fuseAttention(dot1, dot2, qMatrix, kMatrix, vMatrix);
     });
+
+    if (!fused) {
+      llvm::errs() << "[FlashAttentionFusion] No attention pattern found.\n";
+    }
   }
 
 private:
