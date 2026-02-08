@@ -170,6 +170,9 @@ class CPUBackend(BaseBackend):
         # TTIR -> TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        # Custom Fusion Pass
+        cpu.passes.ttcpuir.add_flash_attention_fusion(pm)
+
         cpu.passes.ttcpuir.add_scalarize(pm, True)
         cpu.passes.ttcpuir.add_convert_memory_ops(pm, True)
         cpu.passes.ttcpuir.add_convert_ptr_ops(pm)

@@ -101,6 +101,12 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_convert_debug_ops", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDebugOps());
   });
+  
+  // Custom Pass
+  m.def("add_flash_attention_fusion", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createFlashAttentionFusionPass());
+  });
+  
   m.def("add_triton_cpu_canonicalizer", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createCanonicalize());
   });
