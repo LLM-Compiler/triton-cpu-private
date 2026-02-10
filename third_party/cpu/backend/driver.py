@@ -501,12 +501,25 @@ class CPULauncher(object):
         algo_info["ptr_idx"] = None
         algo_info["element_size"] = 1
         sorted_indices = sorted(signature.keys())
-        for idx in sorted_indices:
-            ty = signature[idx]
-            if ty.startswith('*'):
-                algo_info["ptr_idx"] = idx
-                algo_info["element_size"] = get_type_size(ty[1:])
-                break
+        pointer_indices = [idx for idx in sorted_indices if signature[idx].startswith('*')]
+        
+        if pointer_indices:
+            # Default to first pointer
+            selected_idx = pointer_indices[0]
+            
+            # Heuristic: Prioritize main data structures (A, x) over aux inputs (bias, in_ptr)
+            if hasattr(src, "fn"):
+                arg_names = src.fn.arg_names
+                for idx in pointer_indices:
+                    if idx < len(arg_names):
+                        name = arg_names[idx]
+                        if name in ["arg_A", "A", "x", "x_ptr", "input", "src"]:
+                            selected_idx = idx
+                            break
+            
+            algo_info["ptr_idx"] = selected_idx
+            ty = signature[selected_idx]
+            algo_info["element_size"] = get_type_size(ty[1:])
         
         src_code = make_launcher(constants, signature, ids, algo_info)
         mod = compile_module_from_src(src_code, "__triton_cpu_launcher")
