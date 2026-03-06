@@ -235,4 +235,116 @@ def TTC_BrgemmExecute : TTC_Op<"brgemm_execute",
   );
 }
 
+//
+// NUMA Ops
+//
+
+def TTC_MakeNumaBufferOp : TTC_Op<"make_numa_buffer", [NoMemoryEffect]> {
+  let summary = "Allocate memory pinned to a specific NUMA node";
+
+  let description = [{
+    Allocates a buffer with the given shape and element type, pinned to the
+    specified NUMA node. Returns a pointer to the allocated memory. This
+    enables explicit control over data placement in multi-socket CPU systems.
+  }];
+
+  let arguments = (ins
+    DenseI64ArrayAttr:$static_shape,
+    TypeAttr:$element_type,
+    I32Attr:$numa_node
+  );
+
+  let results = (outs TT_Ptr:$result);
+
+  let assemblyFormat = [{
+    $static_shape `,` $element_type `,` $numa_node attr-dict `:` type($result)
+  }];
+}
+
+def TTC_NumaLoadOp : TTC_Op<"numa_load", [
+  AttrSizedOperandSegments,
+  MemoryEffects<[MemRead<GlobalMemory>]>
+]> {
+  let summary = "One-sided load from remote NUMA node memory";
+
+  let description = [{
+    Performs a load from memory that is known to reside on a remote NUMA node.
+    This op carries NUMA source annotations to enable the compiler's
+    inter-NUMA swizzling pass to overlap remote fetches with local computation.
+  }];
+
+  let arguments = (ins
+    AnyTypeOf<[TT_PtrLike, TT_TensorPtr]>:$ptr,
+    I32Attr:$numa_src,
+    Optional<TT_BoolLike>:$mask,
+    Optional<TT_Type>:$other
+  );
+
+  let results = (outs TT_Type:$result);
+
+  let assemblyFormat = [{
+    $ptr `,` $numa_src (`,` $mask^)? (`,` $other^)?
+    attr-dict `:` type($ptr) `->` type($result)
+  }];
+}
+
+def TTC_NumaStoreOp : TTC_Op<"numa_store", [
+  AttrSizedOperandSegments,
+  MemoryEffects<[MemWrite<GlobalMemory>]>
+]> {
+  let summary = "One-sided store to remote NUMA node memory";
+
+  let description = [{
+    Performs a store to memory that is known to reside on a remote NUMA node.
+    This op carries NUMA destination annotations for scheduling optimization.
+  }];
+
+  let arguments = (ins
+    AnyTypeOf<[TT_PtrLike, TT_TensorPtr]>:$ptr,
+    TT_Type:$value,
+    I32Attr:$numa_dst,
+    Optional<TT_BoolLike>:$mask
+  );
+
+  let assemblyFormat = [{
+    $ptr `,` $value `,` $numa_dst (`,` $mask^)?
+    attr-dict `:` type($ptr) `,` type($value)
+  }];
+}
+
+def TTC_NumaWaitOp : TTC_Op<"numa_wait", [
+  MemoryEffects<[MemRead<GlobalMemory>]>
+]> {
+  let summary = "Block until a cross-socket signal is received";
+
+  let description = [{
+    Implements a lightweight wait on a signal identified by signal_id.
+    Used for fine-grained synchronization across NUMA nodes without
+    heavy OS-level blocking primitives.
+  }];
+
+  let arguments = (ins I32Attr:$signal_id);
+
+  let assemblyFormat = "$signal_id attr-dict";
+}
+
+def TTC_NumaNotifyOp : TTC_Op<"numa_notify", [
+  MemoryEffects<[MemWrite<GlobalMemory>]>
+]> {
+  let summary = "Send a cross-socket signal to a NUMA node";
+
+  let description = [{
+    Sends a lightweight signal identified by signal_id to the specified
+    NUMA destination node. Pairs with ttcpu.numa_wait for cross-socket
+    synchronization.
+  }];
+
+  let arguments = (ins
+    I32Attr:$signal_id,
+    I32Attr:$numa_dst
+  );
+
+  let assemblyFormat = "$signal_id `,` $numa_dst attr-dict";
+}
+
 #endif
