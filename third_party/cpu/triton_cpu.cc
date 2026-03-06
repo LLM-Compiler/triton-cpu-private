@@ -160,6 +160,12 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_program_id_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createGetProgramIdOpToLLVMPass());
   });
+  m.def("add_convert_numa_ops", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertNUMAOps());
+  });
+  m.def("add_numa_ops_to_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createNUMAOpsToLLVMPass());
+  });
   m.def("add_memory_op_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createMemoryOpToLLVMPass());
   });
