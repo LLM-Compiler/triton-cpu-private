@@ -1471,6 +1471,109 @@ def num_programs(axis, _builder=None):
 
 
 # -----------------------
+# NUMA Programming Model
+# -----------------------
+
+
+@builtin
+def numa_id(_builder=None):
+    """
+    Returns the NUMA node ID the current program instance is executing on.
+
+    :rtype: int32
+    """
+    return semantic.numa_id(_builder)
+
+
+@builtin
+def make_numa_buffer(shape, dtype, numa_node, _builder=None):
+    """
+    Allocate a tensor buffer pinned to a specific NUMA node.
+
+    :param shape: Shape of the buffer, e.g., (1024,) or (64, 64).
+    :type shape: tuple of ints
+    :param dtype: Data type of the buffer elements, e.g., :code:`tl.float32`.
+    :type dtype: tl.dtype
+    :param numa_node: NUMA node ID to pin the allocation to.
+    :type numa_node: int
+    :rtype: tl.tensor (pointer to NUMA-pinned memory)
+    """
+    shape = _shape_check_impl(shape)
+    dtype = _constexpr_to_value(dtype)
+    numa_node = _constexpr_to_value(numa_node)
+    return semantic.make_numa_buffer(shape, dtype, numa_node, _builder)
+
+
+@builtin
+def numa_load(ptr, numa_src, mask=None, other=None, _builder=None):
+    """
+    One-sided load from a remote NUMA node's memory.
+
+    Initiates an asynchronous or explicit data fetch from memory that is
+    known to reside on the specified NUMA source node.
+
+    :param ptr: Pointer to the data to load.
+    :param numa_src: Source NUMA node ID where the data resides.
+    :type numa_src: int
+    :param mask: Optional boolean mask for conditional loading.
+    :param other: Optional default value for masked-off elements.
+    """
+    numa_src = _constexpr_to_value(numa_src)
+    return semantic.numa_load(ptr, numa_src, mask, other, _builder)
+
+
+@builtin
+def numa_store(ptr, value, numa_dst, mask=None, _builder=None):
+    """
+    One-sided store to a remote NUMA node's memory.
+
+    Writes data to memory that is known to reside on the specified
+    NUMA destination node.
+
+    :param ptr: Pointer to the destination.
+    :param value: Data to store.
+    :param numa_dst: Destination NUMA node ID.
+    :type numa_dst: int
+    :param mask: Optional boolean mask for conditional storing.
+    """
+    numa_dst = _constexpr_to_value(numa_dst)
+    return semantic.numa_store(ptr, value, numa_dst, mask, _builder)
+
+
+@builtin
+def wait(signal_id, _builder=None):
+    """
+    Block until a cross-socket signal is received.
+
+    Used for lightweight synchronization between NUMA nodes without
+    heavy OS-level blocking. Pairs with :py:func:`notify`.
+
+    :param signal_id: Identifier of the signal to wait on.
+    :type signal_id: int
+    """
+    signal_id = _constexpr_to_value(signal_id)
+    return semantic.numa_wait(signal_id, _builder)
+
+
+@builtin
+def notify(signal_id, numa_dst, _builder=None):
+    """
+    Send a lightweight cross-socket signal to a specific NUMA node.
+
+    Used for fine-grained synchronization between NUMA nodes. Pairs
+    with :py:func:`wait`.
+
+    :param signal_id: Identifier of the signal.
+    :type signal_id: int
+    :param numa_dst: Destination NUMA node ID to signal.
+    :type numa_dst: int
+    """
+    signal_id = _constexpr_to_value(signal_id)
+    numa_dst = _constexpr_to_value(numa_dst)
+    return semantic.numa_notify(signal_id, numa_dst, _builder)
+
+
+# -----------------------
 # Block Initialization
 # -----------------------
 
