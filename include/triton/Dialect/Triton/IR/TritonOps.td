@@ -631,6 +631,20 @@ def TT_GetNumProgramsOp : TT_Op<"get_num_programs", [Pure]> {
     }];
 }
 
+def TT_GetNumaIdOp : TT_Op<"get_numa_id", [Pure]> {
+    let summary = "get the NUMA node ID of the current execution context";
+
+    let description = [{
+        Returns the NUMA node ID on which the current program instance
+        is executing. Used for NUMA-aware data placement and scheduling
+        on multi-socket CPU architectures.
+    }];
+
+    let results = (outs I32:$result);
+
+    let assemblyFormat = "attr-dict `:` type($result)";
+}
+
 //
 // Dot Op
 //
