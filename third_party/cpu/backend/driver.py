@@ -152,8 +152,7 @@ def make_launcher(constants, signature, ids):
             "uint64_t": "K",
         }[ty_to_cpp(ty)]
 
-    # Filter out constexpr from args_format since they're not passed at runtime
-    args_format = ''.join([format_of(ty) for ty in signature.values() if ty != "constexpr"])
+    args_format = ''.join([format_of(ty) for ty in signature.values()])
     format = "iiiOKOOOO" + args_format
 
     signature = ','.join(map(_serialize_signature, signature.values()))
@@ -164,7 +163,7 @@ def make_launcher(constants, signature, ids):
 
     # arg_ptrs_list must match arg_decls - only include non-constexpr args
     signature_without_constexprs = {i: ty for i, ty in signature.items() if ty != "constexpr"}
-    arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature_without_constexprs.keys())
+    arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature.keys())
     kernel_fn_args = [i for i, ty in signature.items() if i not in constants and ty != "constexpr"]
     kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args)
     kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 6)
