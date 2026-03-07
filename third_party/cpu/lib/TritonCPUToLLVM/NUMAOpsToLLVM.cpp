@@ -89,8 +89,7 @@ struct MakeNumaBufferOpConversion
 
     auto sizeVal = rewriter.create<LLVM::ConstantOp>(
         loc, i64Ty, rewriter.getI64IntegerAttr(totalBytes));
-    auto nodeVal = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr(op.getNumaNode()));
+    auto nodeVal = adaptor.getNumaNode();
 
     auto funcOp = getOrInsertFuncDecl(rewriter, mod, "triton_numa_alloc",
                                        ptrTy, {i64Ty, i32Ty});
