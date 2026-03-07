@@ -283,13 +283,12 @@ def TTC_NumaLoadOp : TTC_Op<"numa_load", [
   let results = (outs TT_Type:$result);
 
   let assemblyFormat = [{
-    $ptr `,` $numa_src (`,` $mask^)? (`,` $other^)?
+    $ptr `,` $numa_src (`,` $mask^ `:` type($mask))? (`,` $other^ `:` type($other))?
     attr-dict `:` type($ptr) `->` type($result)
   }];
 }
 
 def TTC_NumaStoreOp : TTC_Op<"numa_store", [
-  AttrSizedOperandSegments,
   MemoryEffects<[MemWrite<GlobalMemory>]>
 ]> {
   let summary = "One-sided store to remote NUMA node memory";
@@ -307,7 +306,7 @@ def TTC_NumaStoreOp : TTC_Op<"numa_store", [
   );
 
   let assemblyFormat = [{
-    $ptr `,` $value `,` $numa_dst (`,` $mask^)?
+    $ptr `,` $value `,` $numa_dst (`,` $mask^ `:` type($mask))?
     attr-dict `:` type($ptr) `,` type($value)
   }];
 }
