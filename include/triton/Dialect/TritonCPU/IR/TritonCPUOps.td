@@ -251,7 +251,7 @@ def TTC_MakeNumaBufferOp : TTC_Op<"make_numa_buffer", [NoMemoryEffect]> {
   let arguments = (ins
     DenseI64ArrayAttr:$static_shape,
     TypeAttr:$element_type,
-    I32Attr:$numa_node
+    I32:$numa_node
   );
 
   let results = (outs TT_Ptr:$result);

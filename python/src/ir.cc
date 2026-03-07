@@ -1590,14 +1590,14 @@ void init_triton_ir(py::module &&m) {
            })
       .def("create_make_numa_buffer",
            [](TritonOpBuilder &self, std::vector<int64_t> &shape,
-              Type elementType, int32_t numaNode) -> Value {
+              Type elementType, Value numaNode) -> Value {
              auto ctx = self.getContext();
              auto ptrTy = PointerType::get(elementType, 1);
              return self.create<cpu::MakeNumaBufferOp>(
                  ptrTy,
                  DenseI64ArrayAttr::get(ctx, shape),
                  TypeAttr::get(elementType),
-                 self.getBuilder().getI32IntegerAttr(numaNode));
+                 numaNode);
            })
       .def("create_numa_load",
            [](TritonOpBuilder &self, Value &ptr, int numaSrc,

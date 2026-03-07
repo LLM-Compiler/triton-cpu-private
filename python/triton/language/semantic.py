@@ -46,10 +46,11 @@ def numa_id(builder: ir.builder) -> tl.tensor:
     return tl.tensor(builder.create_get_numa_id(), tl.int32)
 
 
-def make_numa_buffer(shape, dtype, numa_node: int, builder: ir.builder) -> tl.tensor:
+def make_numa_buffer(shape, dtype, numa_node, builder: ir.builder) -> tl.tensor:
     """Allocate memory pinned to a specific NUMA node."""
+    numa_node = to_tensor(numa_node, builder)
     return tl.tensor(
-        builder.create_make_numa_buffer(shape, dtype.to_ir(builder), numa_node),
+        builder.create_make_numa_buffer(shape, dtype.to_ir(builder), numa_node.handle),
         tl.pointer_type(dtype)
     )
 
