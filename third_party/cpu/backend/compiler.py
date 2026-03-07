@@ -182,6 +182,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_convert_cf_ops(pm)
         cpu.passes.ttcpuir.add_convert_atomic_ops(pm)
         cpu.passes.ttcpuir.add_convert_debug_ops(pm)
+        cpu.passes.ttcpuir.add_convert_numa_ops(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
@@ -258,6 +259,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_memory_op_to_llvmir(pm)
         cpu.passes.ttcpuir.add_atomic_ops_to_llvmir(pm)
         cpu.passes.ttcpuir.add_debug_ops_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_numa_ops_to_llvmir(pm)
 
         vec_lib_requirements = {
             VecLib.libsleef: {"neon", "sse", "avx"},

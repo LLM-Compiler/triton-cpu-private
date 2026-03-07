@@ -27,6 +27,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/FileSystem.h"
@@ -1580,6 +1581,63 @@ void init_triton_ir(py::module &&m) {
              if (axis < 0 || axis > 3)
                throw pybind11::index_error("program_id must be in [0,3]");
              return self.create<GetNumProgramsOp>(axis);
+           })
+      // NUMA Ops
+      .def("create_get_numa_id",
+           [](TritonOpBuilder &self) -> Value {
+             auto i32Ty = IntegerType::get(self.getContext(), 32);
+             return self.create<GetNumaIdOp>(i32Ty);
+           })
+      .def("create_make_numa_buffer",
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+              Type elementType, int32_t numaNode) -> Value {
+             auto ctx = self.getContext();
+             auto ptrTy = PointerType::get(elementType, 1);
+             return self.create<cpu::MakeNumaBufferOp>(
+                 ptrTy,
+                 DenseI64ArrayAttr::get(ctx, shape),
+                 TypeAttr::get(elementType),
+                 self.getBuilder().getI32IntegerAttr(numaNode));
+           })
+      .def("create_numa_load",
+           [](TritonOpBuilder &self, Value &ptr, int numaSrc,
+              py::object mask, py::object other) -> Value {
+             // Infer result type from the pointer's pointee type.
+             Type resultTy;
+             auto ptrType = ptr.getType();
+             if (auto tensorTy = dyn_cast<RankedTensorType>(ptrType)) {
+               auto elemPtrTy = cast<PointerType>(tensorTy.getElementType());
+               resultTy = RankedTensorType::get(tensorTy.getShape(),
+                                                 elemPtrTy.getPointeeType());
+             } else {
+               resultTy = cast<PointerType>(ptrType).getPointeeType();
+             }
+             Value maskVal = mask.is_none() ? Value() : py::cast<Value>(mask);
+             Value otherVal = other.is_none() ? Value() : py::cast<Value>(other);
+             return self.create<cpu::NumaLoadOp>(
+                 resultTy, ptr,
+                 self.getBuilder().getI32IntegerAttr(numaSrc),
+                 maskVal, otherVal);
+           })
+      .def("create_numa_store",
+           [](TritonOpBuilder &self, Value &ptr, Value &value,
+              int numaDst, py::object mask) -> void {
+             Value maskVal = mask.is_none() ? Value() : py::cast<Value>(mask);
+             self.create<cpu::NumaStoreOp>(
+                 ptr, value,
+                 self.getBuilder().getI32IntegerAttr(numaDst),
+                 maskVal);
+           })
+      .def("create_numa_wait",
+           [](TritonOpBuilder &self, int signalId) -> void {
+             self.create<cpu::NumaWaitOp>(
+                 self.getBuilder().getI32IntegerAttr(signalId));
+           })
+      .def("create_numa_notify",
+           [](TritonOpBuilder &self, int signalId, int numaDst) -> void {
+             self.create<cpu::NumaNotifyOp>(
+                 self.getBuilder().getI32IntegerAttr(signalId),
+                 self.getBuilder().getI32IntegerAttr(numaDst));
            })
       .def("create_dot",
            [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
