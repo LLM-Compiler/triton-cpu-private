@@ -151,6 +151,34 @@ struct NumaNotifyOpConversion
   }
 };
 
+// Safety-net fallback: any cpu::NumaLoadOp that survives to this pass
+// indicates a pipeline ordering bug (ConvertNUMAOps should have rewritten
+// it to triton::LoadOp before scalarize/memory-op-conversion).
+struct NumaLoadOpFallback : public OpConversionPattern<cpu::NumaLoadOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cpu::NumaLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return op.emitOpError(
+        "survived to NUMAOpsToLLVM -- it should have been converted to "
+        "triton::LoadOp by the ConvertNUMAOps pass; check pipeline ordering");
+  }
+};
+
+// Safety-net fallback for cpu::NumaStoreOp (same rationale as above).
+struct NumaStoreOpFallback : public OpConversionPattern<cpu::NumaStoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cpu::NumaStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return op.emitOpError(
+        "survived to NUMAOpsToLLVM -- it should have been converted to "
+        "triton::StoreOp by the ConvertNUMAOps pass; check pipeline ordering");
+  }
+};
+
 struct NUMAOpsToLLVM
     : public triton::impl::NUMAOpsToLLVMBase<NUMAOpsToLLVM> {
   using NUMAOpsToLLVMBase::NUMAOpsToLLVMBase;
@@ -170,6 +198,8 @@ struct NUMAOpsToLLVM
     patterns.add<MakeNumaBufferOpConversion>(typeConverter, context);
     patterns.add<NumaWaitOpConversion>(typeConverter, context);
     patterns.add<NumaNotifyOpConversion>(typeConverter, context);
+    patterns.add<NumaLoadOpFallback>(typeConverter, context);
+    patterns.add<NumaStoreOpFallback>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
