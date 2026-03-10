@@ -250,7 +250,10 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
         vec = rewriter.create<vector::MaskedLoadOp>(loc, subVecTy, memRef,
                                                     zeroIdx, subMask, passThru);
       } else {
-        vec = rewriter.create<vector::LoadOp>(loc, subVecTy, memRef, zeroIdx);
+        bool nt = (loadOp.getCache() == CacheModifier::CG);
+        vec = rewriter.create<vector::LoadOp>(loc, subVecTy, memRef,
+                                              ValueRange{zeroIdx},
+                                              /*nontemporal=*/nt);
       }
 
       if (shape.size() > 1) {
@@ -437,7 +440,9 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
         rewriter.create<vector::MaskedStoreOp>(loc, memRef, zeroIdx, subMask,
                                                val);
       } else {
-        rewriter.create<vector::StoreOp>(loc, val, memRef, zeroIdx);
+        bool nt = (storeOp.getCache() == CacheModifier::CG);
+        rewriter.create<vector::StoreOp>(loc, val, memRef, ValueRange{zeroIdx},
+                                         /*nontemporal=*/nt);
       }
     }
 

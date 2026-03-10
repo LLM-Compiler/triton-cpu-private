@@ -83,9 +83,21 @@ static CacheModifier analyzeReuseDistance(cpu::NumaLoadOp op) {
     parent = parent->getParentOp();
   }
 
-  // No enclosing loops -> one-shot remote fetch, stream without caching.
-  if (enclosingLoops.empty())
+  // No enclosing loops: check if the loaded value is consumed inside a loop.
+  // If so, the tile has high temporal reuse (e.g., a bias vector reused on
+  // every iteration of an inner matmul loop).
+  if (enclosingLoops.empty()) {
+    Value result = op.getResult();
+    for (Operation *user : result.getUsers()) {
+      Operation *ancestor = user->getParentOp();
+      while (ancestor) {
+        if (isa<scf::ForOp>(ancestor))
+          return CacheModifier::CA;
+        ancestor = ancestor->getParentOp();
+      }
+    }
     return CacheModifier::CG;
+  }
 
   // --- Step 3: Loop-invariance check ---
   // If the pointer is defined outside the outermost enclosing loop, the
@@ -149,11 +161,29 @@ struct NumaLoadToLoadConversion : public OpRewritePattern<cpu::NumaLoadOp> {
                                ? EvictionPolicy::EVICT_FIRST
                                : EvictionPolicy::NORMAL;
 
+    Value ptr = op.getPtr();
     Value mask = op.getMask();
     Value other = op.getOther();
 
+    auto ptrTy = ptr.getType();
+    if (auto tensorPtrTy = dyn_cast<RankedTensorType>(ptrTy)) {
+      auto ptrElemTy = cast<triton::PointerType>(tensorPtrTy.getElementType());
+      auto pointeeTy = ptrElemTy.getPointeeType();
+      auto resultShape = tensorPtrTy.getShape();
+
+      if (other && !isa<RankedTensorType>(other.getType())) {
+        auto splatTy = RankedTensorType::get(resultShape, pointeeTy);
+        other = rewriter.create<triton::SplatOp>(op.getLoc(), splatTy, other);
+      }
+      if (mask && !isa<RankedTensorType>(mask.getType())) {
+        auto boolTy = rewriter.getI1Type();
+        auto splatTy = RankedTensorType::get(resultShape, boolTy);
+        mask = rewriter.create<triton::SplatOp>(op.getLoc(), splatTy, mask);
+      }
+    }
+
     rewriter.replaceOpWithNewOp<triton::LoadOp>(
-        op, op.getPtr(), mask, other, cache, evict, /*isVolatile=*/false);
+        op, ptr, mask, other, cache, evict, /*isVolatile=*/false);
     return success();
   }
 };
