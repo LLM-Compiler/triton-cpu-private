@@ -11,6 +11,167 @@ Note: nontemporal propagation to LLVM works via vector::LoadOp / vector::StoreOp
 which have native nontemporal attributes. The masked variants (vector::MaskedLoadOp,
 vector::MaskedStoreOp) do NOT support nontemporal, so tests use unmasked patterns
 for LLVM IR verification.
+
+================================================================================
+CACHE EVICTION POLICIES & NUMA MEMORY FLOW — Architecture Diagrams
+================================================================================
+
+Cache Eviction Policies (CacheModifier) — Detailed Explanation:
+---------------------------------------------------------------
+  • CG (Cache Global / Streaming):
+    - Semantics: Data bypasses all cache levels. Loads use vmovntdqa (streaming
+      load hint); stores use vmovntps/vmovntdq (non-temporal store).
+    - Data path: CPU ←→ DRAM directly. No cache fill on load; no cache allocate
+      on store. Reduces cache pollution.
+    - When to use: One-shot reads, sequential streaming (e.g., weight matrix
+      tiles read once per layer), or any remote store (consumer is on another
+      socket and won't read from our cache).
+
+  • CA (Cache Allocate / Temporal):
+    - Semantics: Data is allocated in cache. Loads use vmovdqa/vmovaps; stores
+      use vmovaps/vmovdq. Normal cache behavior.
+    - Data path: On first access: DRAM → cache → CPU. On reuse: cache → CPU.
+    - When to use: Loop-invariant data (bias, scale), KV-cache heads reused
+      across iterations, small lookup tables.
+
+ML Advantages in Machine Learning Context:
+------------------------------------------
+  - Weight streaming (CG): Transformer weights are read once per layer. Using
+    CG prevents 100MB+ of weights from evicting useful L3 data (e.g., activations).
+    L3 is typically 32–64MB; streaming weights avoids thrashing.
+
+  - Bias / layer norm params (CA): Small vectors (e.g., 4096 floats) reused
+    every matmul iteration. CA keeps them in L3; without it, each iteration
+    would fetch from remote DRAM (~140ns vs ~80ns local, ~12ns L3).
+
+  - KV-cache reuse (CA): Attention keys/values reused across query positions.
+    Loop-invariant analysis assigns CA so the same tile stays cached.
+
+  - Remote stores (CG): Writing activations to a buffer consumed by another
+    NUMA node. Caching that write in our L3 wastes capacity—the consumer
+    on the other socket cannot read our cache. CG writes directly to remote
+    DRAM.
+
+--------------------------------------------------------------------------------
+Diagram 1: make_numa_buffer — NUMA-Pinned Allocation
+--------------------------------------------------------------------------------
+
+    tl.make_numa_buffer((N,), dtype, numa_node)  allocates memory on a
+    specific NUMA node's DRAM. The OS places pages on that node's physical RAM.
+
+    ┌─────────────────────────────────┐     ┌─────────────────────────────────┐
+    │  NUMA Node 0 (e.g., numa_node=0)│     │  NUMA Node 1 (e.g., numa_node=1) │
+    │  ┌─────┐  ┌─────┐  ┌─────────┐ │     │  ┌─────┐  ┌─────┐  ┌─────────┐   │
+    │  │Core │  │Core │  │ L3 Cache│ │     │  │Core │  │Core │  │ L3 Cache│   │
+    │  │ 0   │  │ 1   │  │ (32MB)  │ │     │  │ 2   │  │ 3   │  │ (32MB)  │   │
+    │  └──┬──┘  └──┬──┘  └────┬────┘ │     │  └──┬──┘  └──┬──┘  └────┬────┘   │
+    │     │        │          │      │     │     │        │          │        │
+    │     ▼        ▼          ▼      │     │     ▼        ▼          ▼        │
+    │  ┌──────────────────────────┐ │     │  ┌──────────────────────────┐   │
+    │  │   Local DRAM (64GB)       │ │     │  │   Local DRAM (64GB)       │   │
+    │  │  ┌────────────────────┐   │ │     │  │  ┌────────────────────┐   │   │
+    │  │  │ make_numa_buffer(   │   │ │     │  │  │ make_numa_buffer(   │   │   │
+    │  │  │   ..., numa_node=0) │   │ │     │  │  │   ..., numa_node=1) │   │   │
+    │  │  │   → pages here      │   │ │     │  │  │   → pages here      │   │   │
+    │  │  └────────────────────┘   │ │     │  │  └────────────────────┘   │   │
+    │  └──────────────────────────┘ │     │  └──────────────────────────┘   │
+    └─────────────────────────────────┘     └─────────────────────────────────┘
+                        │                                    │
+                        └──────────── Interconnect ──────────┘
+                              (~1.7× latency for remote)
+
+--------------------------------------------------------------------------------
+Diagram 2: Kernel 1 — streaming_oneshot_kernel (numa_load, CG / nontemporal)
+--------------------------------------------------------------------------------
+
+    One-shot load from remote NUMA node. No loop, no reuse → CG → bypass cache.
+
+    ┌─ NUMA Node 1 (executing core) ─────┐    ┌─ NUMA Node 0 (remote) ────────┐
+    │  ┌─────────┐                        │    │  ┌──────────────────────────┐  │
+    │  │  Core   │  tl.numa_load(ptr,    │    │  │  Remote DRAM             │  │
+    │  │         │    numa_src=0)         │    │  │  src_ptr [0..127]       │  │
+    │  └────┬────┘                        │    │  └────────────▲─────────────┘  │
+    │       │                             │    │               │                 │
+    │       │  CG: vmovntdqa              │    │               │ 1. fetch        │
+    │       │  (bypass L1/L2/L3)          │    │               │ 2. no cache fill│
+    │       │                             │    │               │                 │
+    │  ┌────┴────┐  L3: skipped           │    │               │                 │
+    │  │   L3    │ ───────────────────────┼────┼───────────────┘                 │
+    │  │ (skip)  │     Interconnect       │    │  (data flows directly to core)   │
+    │  └─────────┘                        │    └─────────────────────────────────┘
+    │       │                             │
+    │       ▼  tl.store(dst_ptr)          │
+    │  Local DRAM (dst_ptr)               │
+    └────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+Diagram 3: Kernel 2 — streaming_loop_kernel (numa_load in loop, CG)
+--------------------------------------------------------------------------------
+
+    IV-dependent ptr: each iteration loads different remote block. Sequential
+    streaming, no reuse → CG. (Masked path may not emit nontemporal in IR.)
+
+    ┌─ NUMA Node 1 (executing core) ─────┐    ┌─ NUMA Node 0 (remote) ────────┐
+    │  for k in 0, BLOCK_SIZE, 2*BLOCK:   │    │  src_ptr + k + offsets        │
+    │    tile = numa_load(src_ptr+k, 0)   │    │  ┌─────┬─────┬─────┬─────┐    │
+    │    acc += tile                      │    │  │ k=0 │ k=64│ k=128│ ... │    │
+    │                                     │    │  └──▲──┴──▲──┴──▲───┴─────┘    │
+    │  Each load: different block         │    │     │     │     │              │
+    │  → no temporal reuse                │    │     │     │     │ CG: direct   │
+    │  → CG (streaming)                   │    │     └─────┴─────┴──────────────┼─►
+    │                                     │    │       (bypass cache each iter) │
+    │  ┌─────────┐                        │    └────────────────────────────────┘
+    │  │  Core   │  acc in registers      │
+    │  └─────────┘                        │
+    └────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+Diagram 4: Kernel 3 — invariant_numa_load_kernel (numa_load, CA / cached)
+--------------------------------------------------------------------------------
+
+    Bias loaded ONCE before loop, used every iteration → high reuse → CA.
+
+    ┌─ NUMA Node 1 (executing core) ─────┐    ┌─ NUMA Node 0 (remote) ────────┐
+    │  bias = numa_load(bias_ptr, 0)  ───┼───►│  bias_ptr in Remote DRAM      │
+    │       │  CA: allocate in L3         │    │                                │
+    │       ▼                             │    └────────────────────────────────┘
+    │  ┌─────────────────────────┐        │
+    │  │  L3 Cache               │        │
+    │  │  ┌───────────────────┐  │        │
+    │  │  │ bias block (cached)│  │        │  for k in ...:
+    │  │  └─────────┬─────────┘  │        │    x = load(src_ptr + k)
+    │  └────────────┼────────────┘        │    acc += x + bias  ◄── reuse bias
+    │               │                     │         ▲
+    │               │  reused every iter  │         │ from L3 (no remote fetch)
+    │               ▼                     │         │
+    │  ┌─────────┐                        │
+    │  │  Core   │  acc += x + bias       │
+    │  └─────────┘                        │
+    └────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+Diagram 5: Kernel 4 — numa_store_kernel (numa_store, always CG)
+--------------------------------------------------------------------------------
+
+    Store to remote NUMA node. Always CG: bypass cache, write directly to
+    remote DRAM. Caching remote writes wastes local L3; consumer is on another
+    socket and won't read from our cache.
+
+    ┌─ NUMA Node 1 (executing core) ─────┐    ┌─ NUMA Node 0 (remote) ────────┐
+    │  ┌─────────┐                        │    │                                │
+    │  │  Core   │  x = load(src_ptr)     │    │  ┌──────────────────────────┐ │
+    │  │         │  numa_store(dst_ptr,   │    │  │  Remote DRAM              │ │
+    │  │         │    x, numa_dst=0)      │    │  │  dst_ptr ◄────────────────┼─┼─┐
+    │  └────┬────┘                        │    │  │  vmovntps (direct write)  │ │ │
+    │       │                             │    │  └──────────────────────────┘ │ │
+    │       │  CG: bypass L1/L2/L3        │    │            ▲                   │ │
+    │       │  vmovntps / vmovntdq        │    │            │                   │ │
+    │       │  (no cache allocate)       │    │            │                   │ │
+    │       └─────────────────────────────┼────┼────────────┘                   │ │
+    │                                     │    │  Interconnect                  │ │
+    │  Local L3: NOT polluted by          │    └──────────────────────────────┘ │
+    │  remote store data                   │                                      │
+    └────────────────────────────────────┘                                      │
 """
 import pytest
 import torch
@@ -26,6 +187,8 @@ import triton.language as tl
 # A single block load from a remote NUMA region with no enclosing loop.
 # The analysis sees no loop => no reuse => CacheModifier::CG => nontemporal.
 # No mask means it goes through vector::LoadOp (which carries nontemporal).
+#
+# Memory flow: Remote DRAM → (bypass cache) → Core. See Diagram 2 above.
 # ---------------------------------------------------------------------------
 
 @triton.jit
@@ -43,6 +206,9 @@ def streaming_oneshot_kernel(
 #
 # For functional correctness testing only. The masked load path uses
 # vector::MaskedLoadOp which cannot carry nontemporal in this MLIR version.
+#
+# Memory flow: Each iteration loads different remote block (src_ptr+k).
+# No reuse across iterations → CG. See Diagram 3 above.
 # ---------------------------------------------------------------------------
 
 @triton.jit
@@ -67,6 +233,9 @@ def streaming_loop_kernel(
 # The bias pointer is loaded ONCE before the loop. Its result is consumed
 # inside the loop every iteration => high temporal reuse => CA => no nontemporal.
 # No mask on the bias load => goes through vector::LoadOp.
+#
+# Memory flow: Remote DRAM → L3 (cached) → Core reuses from L3 each iter.
+# See Diagram 4 above. ML use case: bias vector in matmul, layer norm params.
 # ---------------------------------------------------------------------------
 
 @triton.jit
@@ -91,6 +260,9 @@ def invariant_numa_load_kernel(
 # ---------------------------------------------------------------------------
 # Kernel 4: numa_store (remote writes should always be nontemporal)
 # No mask => goes through vector::StoreOp (which carries nontemporal).
+#
+# Memory flow: Core → (bypass cache) → Remote DRAM. See Diagram 5 above.
+# ML use case: writing activations/gradients to remote buffer for next stage.
 # ---------------------------------------------------------------------------
 
 @triton.jit
