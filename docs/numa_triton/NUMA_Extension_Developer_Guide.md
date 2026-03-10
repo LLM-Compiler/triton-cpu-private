@@ -1,6 +1,8 @@
 # NUMA Extension for Triton-CPU — Developer Guide
 
 > **Scope**: This document synthesizes the design, implementation, and integration of the NUMA-aware extension for Triton-CPU, as implemented across commits `2adfa59` through `63d27de`. It provides a comprehensive guide for developers working with or extending NUMA support.
+>
+> **Related**: [NUMA_Triton_Developer_Document.md](NUMA_Triton_Developer_Document.md) covers the same feature with a slightly different presentation (ASCII diagrams, alternate API naming). This guide is the primary reference for implementation details and correct API usage.
 
 ---
 
