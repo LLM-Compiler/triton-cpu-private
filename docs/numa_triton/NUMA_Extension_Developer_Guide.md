@@ -354,6 +354,10 @@ Similarly for `vector::StoreOp`. The `vector` dialect carries the nontemporal at
 - `triton_numa_wait(signal_id)` → Spin (1024 iters) then futex wait
 - `triton_numa_notify(signal_id, numa_dst)` → Set signal, futex_wake
 
+**Wait/notify scope**: The signaling mechanism is entirely application-level — it
+does not use libnuma or OS pagetable/NUMA policy. Only standard futex syscalls
+for blocking/waking. See `numa_runtime_developer_guide.md` §5.9 for details.
+
 See `docs/numa_triton/numa_runtime_developer_guide.md` for full API and concurrency details.
 
 ### 4.8 Build Integration

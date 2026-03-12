@@ -408,6 +408,35 @@ The code treats this as a **soft failure**: the memory is still valid and usable
 but may not reside on the requested node. Performance degrades, but correctness
 is preserved.
 
+### 5.9 Wait/Notify: Application-Level Only (No libnuma or Pagetable Interaction)
+
+The `triton_numa_wait` / `triton_numa_notify` signaling mechanism is **entirely
+application-level** for coordination. It does **not** interact with libnuma or
+OS-level pagetable / NUMA memory policy.
+
+| Concern | Wait/Notify | NUMA Allocation (separate) |
+|---------|-------------|----------------------------|
+| **libnuma** | No — zero calls | Yes — `numa_alloc_onnode`, `mbind`, etc. |
+| **Pagetables** | No — no `mbind`, `migrate_pages`, or NUMA policy | Yes — pages bound to NUMA nodes |
+| **Signal table** | Process BSS (loader-allocated) | N/A |
+| **Kernel involvement** | Standard futex only (scheduler block/wake) | `mmap`, `mbind` for allocation |
+
+**Implementation summary**:
+
+- The signal table (`g_signal_table`) is a `static` global — ordinary process
+  memory in BSS, allocated by the loader. No `triton_numa_alloc` or NUMA-aware
+  allocation.
+- Wait/notify use `std::atomic<int32_t>` for signals and Linux `futex` syscalls
+  for blocking/waking. The kernel's futex subsystem handles scheduling only;
+  it does not manipulate pagetables or NUMA policy.
+- The `numa_dst` parameter to `triton_numa_notify` is reserved for future use
+  and is currently unused.
+
+The **data** that producer and consumer coordinate over (via `tl.numa_store` /
+`tl.numa_load`) may live in NUMA-allocated buffers. The wait/notify primitives
+only coordinate *when* that data is ready — they do not touch libnuma or
+pagetables.
+
 ---
 
 ## 6. Testing
