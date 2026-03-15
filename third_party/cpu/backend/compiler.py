@@ -154,7 +154,6 @@ class CPUBackend(BaseBackend):
     def make_ttir(mod, metadata, opt):
         # This is the same as the Nvidia backend.
         pm = ir.pass_manager(mod.context)
-        pm.enable_debug()
         passes.common.add_inliner(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)
@@ -169,7 +168,6 @@ class CPUBackend(BaseBackend):
     def make_ttcir(mod, metadata, opt):
         # TTIR -> TTCIR
         pm = ir.pass_manager(mod.context)
-        pm.enable_debug()
         cpu.passes.ttcpuir.add_scalarize(pm, True)
         cpu.passes.ttcpuir.add_convert_memory_ops(pm, True)
         cpu.passes.ttcpuir.add_convert_ptr_ops(pm)
@@ -192,7 +190,6 @@ class CPUBackend(BaseBackend):
     def make_tttcir(self, mod, metadata, opt):
         # TTCIR -> Target TTCIR
         pm = ir.pass_manager(mod.context)
-        pm.enable_debug()
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
@@ -242,7 +239,6 @@ class CPUBackend(BaseBackend):
         mod = src
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
-        pm.enable_debug()
         if options.get_ukernels() == Ukernels.OneDNN:
             cpu.passes.ttcpuir.add_ukernels_to_onednn_llvmir(pm)
         if options.get_ukernels() == Ukernels.XSMM:
