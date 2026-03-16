@@ -152,7 +152,7 @@ def make_launcher(constants, signature, ids):
             "uint64_t": "K",
         }[ty_to_cpp(ty)]
 
-    args_format = ''.join([format_of(ty) for ty in signature.values()])
+    args_format = ''.join([format_of(ty) for ty in signature.values() if ty != "constexpr"])
     format = "iiiOKOOOO" + args_format
 
     signature = ','.join(map(_serialize_signature, signature.values()))
@@ -161,9 +161,8 @@ def make_launcher(constants, signature, ids):
 
     arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
 
-    # arg_ptrs_list must match arg_decls - only include non-constexpr args
     signature_without_constexprs = {i: ty for i, ty in signature.items() if ty != "constexpr"}
-    arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature.keys())
+    arg_ptrs_list = ', '.join(f"&arg{i}" for i, ty in signature.items() if ty != "constexpr")
     kernel_fn_args = [i for i, ty in signature.items() if i not in constants and ty != "constexpr"]
     kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args)
     kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 6)
@@ -307,10 +306,10 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *py_obj_stream;
   void* pKrnl;
 
-  {' '.join([f"{_extracted_type(ty)} arg{i}; " for i, ty in signature.items()])}
+  {' '.join([f"{_extracted_type(ty)} arg{i}; " for i, ty in signature_without_constexprs.items()])}
   if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &py_obj_stream, &pKrnl,
                                        &kernel_metadata, &launch_metadata,
-                                       &launch_enter_hook, &launch_exit_hook {', ' + arg_ptrs_list if len(signature) > 0 else ''})) {{
+                                       &launch_enter_hook, &launch_exit_hook {', ' + arg_ptrs_list if len(signature_without_constexprs) > 0 else ''})) {{
     return NULL;
   }}
 
