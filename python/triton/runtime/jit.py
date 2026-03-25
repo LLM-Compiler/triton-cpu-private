@@ -633,10 +633,22 @@ class JITFunction(KernelInterface[T]):
             grid_1 = grid[1] if grid_size > 1 else 1
             grid_2 = grid[2] if grid_size > 2 else 1
             # launch kernel
+            # CPU (and some other) launchers build PyArg_ParseTuple from non-constexpr
+            # parameters only; constexpr values are baked into the binary. Pass only
+            # runtime arguments here so the native launcher arity matches.
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
+            # Omit (a) Python tl.constexpr parameters and (b) arguments the compiler
+            # folded to constexpr (e.g. stride==1 for row-major GEMM). The CPU launcher
+            # only accepts values that remain in the compiled MLIR signature.
+            compiled_sig = kernel.src.signature
+            launch_values = tuple(
+                bound_args[name]
+                for name, p in zip(self.arg_names, self.params)
+                if not p.is_constexpr and compiled_sig.get(name) != "constexpr"
+            )
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
                        launch_metadata, self.CompiledKernel.launch_enter_hook, self.CompiledKernel.launch_exit_hook,
-                       *bound_args.values())
+                       *launch_values)
         return kernel
 
     def repr(self, _):
