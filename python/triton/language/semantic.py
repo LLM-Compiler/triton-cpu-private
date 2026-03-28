@@ -36,6 +36,74 @@ def num_programs(axis: int, builder: ir.builder) -> tl.tensor:
     return tl.tensor(builder.create_get_num_programs(axis), tl.int32)
 
 
+# ===----------------------------------------------------------------------===##
+# NUMA Programming Model
+# ===----------------------------------------------------------------------===##
+
+
+def numa_id(builder: ir.builder) -> tl.tensor:
+    """Return the NUMA node ID for the current execution context."""
+    return tl.tensor(builder.create_get_numa_id(), tl.int32)
+
+
+def make_numa_buffer(shape, dtype, numa_node, builder: ir.builder) -> tl.tensor:
+    """Allocate memory pinned to a specific NUMA node."""
+    numa_node = to_tensor(numa_node, builder)
+    return tl.tensor(
+        builder.create_make_numa_buffer(shape, dtype.to_ir(builder), numa_node.handle),
+        tl.pointer_type(dtype)
+    )
+
+
+def numa_load(ptr, numa_src: int, mask, other, builder: ir.builder) -> tl.tensor:
+    """One-sided load from a remote NUMA node's memory."""
+    ptr = to_tensor(ptr, builder)
+    if mask is not None:
+        mask = to_tensor(mask, builder)
+    if other is not None:
+        other = to_tensor(other, builder)
+    ptr_ty = ptr.type
+    if ptr_ty.is_block():
+        element_ty = ptr_ty.scalar.element_ty
+        ret_ty = tl.block_type(element_ty, ptr_ty.shape)
+    elif isinstance(ptr_ty, tl.pointer_type):
+        element_ty = ptr_ty.element_ty
+        ret_ty = element_ty
+    else:
+        raise TypeError(f"numa_load expects a pointer type, got {ptr_ty}")
+    result_handle = builder.create_numa_load(
+        ptr.handle,
+        numa_src,
+        mask.handle if mask is not None else None,
+        other.handle if other is not None else None,
+    )
+    return tl.tensor(result_handle, ret_ty)
+
+
+def numa_store(ptr, value, numa_dst: int, mask, builder: ir.builder):
+    """One-sided store to a remote NUMA node's memory."""
+    ptr = to_tensor(ptr, builder)
+    value = to_tensor(value, builder)
+    if mask is not None:
+        mask = to_tensor(mask, builder)
+    builder.create_numa_store(
+        ptr.handle,
+        value.handle,
+        numa_dst,
+        mask.handle if mask is not None else None,
+    )
+
+
+def numa_wait(signal_id: int, builder: ir.builder):
+    """Block until a cross-socket signal is received."""
+    builder.create_numa_wait(signal_id)
+
+
+def numa_notify(signal_id: int, numa_dst: int, builder: ir.builder):
+    """Send a lightweight cross-socket signal to a NUMA node."""
+    builder.create_numa_notify(signal_id, numa_dst)
+
+
 # ===----------------------------------------------------------------------===//
 #                               Implicit Casting Utilities
 # ===----------------------------------------------------------------------===//

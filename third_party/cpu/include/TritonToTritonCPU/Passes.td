@@ -194,4 +194,17 @@ def ScalarizeUsingForOp : Pass<"triton-cpu-scalarize", "mlir::ModuleOp"> {
 }
 
 
+def ConvertNUMAOps : Pass<"triton-cpu-convert-numa-ops", "mlir::ModuleOp"> {
+    let summary = "Convert NUMA-aware operations for CPU.";
+    let description = [{
+        Converts NUMA-aware Triton operations (numa_load, numa_store,
+        make_numa_buffer, wait, notify) for the CPU backend.
+    }];
+    let constructor = "mlir::triton::cpu::createConvertNUMAOps()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 #endif

@@ -115,4 +115,18 @@ def MathToVecLib : Pass<"triton-cpu-math-to-vec-lib", "mlir::ModuleOp"> {
                              "mlir::LLVM::LLVMDialect"];
 }
 
+def NUMAOpsToLLVM : Pass<"triton-cpu-numa-ops-to-llvm", "mlir::ModuleOp"> {
+    let summary = "Convert NUMA operations to LLVM runtime calls.";
+    let description = [{
+        Lowers NUMA-aware TritonCPU ops (get_numa_id, make_numa_buffer,
+        numa_wait, numa_notify) to LLVM call instructions targeting the
+        C++ NUMA runtime (triton_get_numa_id, triton_numa_alloc, etc.).
+    }];
+    let constructor = "mlir::triton::cpu::createNUMAOpsToLLVMPass()";
+
+    let dependentDialects = ["mlir::LLVM::LLVMDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 #endif

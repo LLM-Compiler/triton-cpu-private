@@ -46,7 +46,19 @@ endif()
 
 # Configure and build Triton-CPU runtime
 set(TRITON_CPU_RUNTIME_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp)
+set(TRITON_CPU_RUNTIME_SOURCES ${TRITON_CPU_RUNTIME_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/runtime/runtime_numa.cpp)
 set(TRITON_CPU_RUNTIME_LIBS LLVMSupport)
+
+# Check for libnuma
+find_library(LIBNUMA numa)
+if (LIBNUMA)
+  message(STATUS "Found libnuma: ${LIBNUMA}")
+  set(TRITON_CPU_RUNTIME_LIBS ${TRITON_CPU_RUNTIME_LIBS} ${LIBNUMA})
+  add_compile_definitions(TRITON_HAS_NUMA)
+else()
+  message(STATUS "libnuma not found - NUMA runtime will use fallback paths")
+endif()
+
 if (dnnl_FOUND AND HAS_UKERNELS)
   set(TRITON_CPU_RUNTIME_SOURCES ${TRITON_CPU_RUNTIME_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/runtime/runtime_onednn.cpp)
   set(TRITON_CPU_RUNTIME_LIBS ${TRITON_CPU_RUNTIME_LIBS} DNNL::dnnl)

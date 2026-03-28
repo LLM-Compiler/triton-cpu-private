@@ -37,6 +37,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertScanOp();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertAtomicOps();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDebugOps();
 
+std::unique_ptr<OperationPass<ModuleOp>> createConvertNUMAOps();
+
 std::unique_ptr<OperationPass<ModuleOp>> createScalarizeUsingForOpPass();
 std::unique_ptr<OperationPass<ModuleOp>>
 createScalarizeUsingForOpPass(bool skipGatherScatter);

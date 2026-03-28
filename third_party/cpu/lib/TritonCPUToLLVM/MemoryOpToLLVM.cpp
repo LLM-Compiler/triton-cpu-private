@@ -203,11 +203,11 @@ struct LoadOpConversion : public OpConversionPattern<triton::LoadOp> {
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Type ptrTy = LLVM::LLVMPointerType::get(getContext());
     Value ptr = rewriter.getRemappedValue(op.getPtr());
     Type resTy = getTypeConverter()->convertType(op.getType());
-    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, resTy, ptr, 0,
-                                              op.getIsVolatile());
+    bool nonTemporal = (op.getCache() == CacheModifier::CG);
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, resTy, ptr, /*alignment=*/0,
+                                              op.getIsVolatile(), nonTemporal);
     return success();
   }
 };
@@ -218,10 +218,12 @@ struct StoreOpConversion : public OpConversionPattern<triton::StoreOp> {
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
     Value ptr = rewriter.getRemappedValue(op.getPtr());
     Value val = rewriter.getRemappedValue(op.getValue());
-    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, val, ptr);
+    bool nonTemporal = (op.getCache() == CacheModifier::CG);
+    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, val, ptr, /*alignment=*/0,
+                                               /*isVolatile=*/false,
+                                               nonTemporal);
     return success();
   }
 };
