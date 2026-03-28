@@ -129,6 +129,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_convert_dot_generic", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDotGeneric());
   });
+  m.def("add_annotate_numa_shard_attrs", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createAnnotateNumaShardAttrs());
+  });
   m.def("add_convert_unsupported_ops",
         [](mlir::PassManager &pm, bool promote_bf16_to_fp32,
            bool convert_mixed_precision_matmul, bool promote_lib_math_to_fp32) {

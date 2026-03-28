@@ -43,6 +43,7 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createConvertDotToAMX(bool convertInt8, bool convertFp16, bool convertBf16);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
+std::unique_ptr<OperationPass<ModuleOp>> createAnnotateNumaShardAttrs();
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotOpToUkernelOps(

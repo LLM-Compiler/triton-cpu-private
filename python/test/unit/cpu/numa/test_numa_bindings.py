@@ -24,6 +24,7 @@ import os
 import ctypes
 import ctypes.util
 import struct
+import threading
 
 # ──────────────────────────────────────────────────────────────────────
 # Phase 0: Locate and load the NUMA runtime shared library
@@ -94,7 +95,21 @@ def load_runtime():
     lib.triton_numa_notify.restype = None
     lib.triton_numa_notify.argtypes = [ctypes.c_int32, ctypes.c_int32]
 
-    print("[PASS] All 6 NUMA runtime symbols resolved successfully.\n")
+    # void triton_numa_allreduce_sum_f32(float* local, float* scratch, float* out,
+    #                                    int64_t count, int32_t shard_id,
+    #                                    int32_t num_shards, int32_t signal_base)
+    lib.triton_numa_allreduce_sum_f32.restype = None
+    lib.triton_numa_allreduce_sum_f32.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int64,
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.c_int32,
+    ]
+
+    print("[PASS] All 7 NUMA runtime symbols resolved successfully.\n")
     return lib
 
 
@@ -277,7 +292,60 @@ def test_signaling(lib):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Phase 4: Triton JIT Kernel on NUMA-Allocated Memory
+# Phase 4: Test shared-memory all-reduce primitive
+# ──────────────────────────────────────────────────────────────────────
+
+def test_allreduce_sum(lib):
+    print("=" * 60)
+    print("TEST 4: Shared-memory all-reduce (f32)")
+    print("=" * 60)
+
+    n = 16
+    local0 = (ctypes.c_float * n)(*([1.0] * n))
+    local1 = (ctypes.c_float * n)(*([2.0] * n))
+    scratch = (ctypes.c_float * (2 * n))()
+    out = (ctypes.c_float * n)()
+
+    errors = []
+
+    def run_shard(local, shard_id):
+        try:
+            lib.triton_numa_allreduce_sum_f32(
+                ctypes.cast(local, ctypes.c_void_p),
+                ctypes.cast(scratch, ctypes.c_void_p),
+                ctypes.cast(out, ctypes.c_void_p),
+                ctypes.c_int64(n),
+                ctypes.c_int32(shard_id),
+                ctypes.c_int32(2),
+                ctypes.c_int32(200),
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    t0 = threading.Thread(target=run_shard, args=(local0, 0), daemon=True)
+    t1 = threading.Thread(target=run_shard, args=(local1, 1), daemon=True)
+    t0.start()
+    t1.start()
+    t0.join(timeout=5.0)
+    t1.join(timeout=5.0)
+
+    if t0.is_alive() or t1.is_alive():
+        print("[FAIL] all-reduce threads did not complete (possible deadlock).")
+        return False
+    if errors:
+        print(f"[FAIL] all-reduce raised: {errors[0]}")
+        return False
+
+    for i in range(n):
+        if abs(local0[i] - 3.0) > 1e-6:
+            print(f"[FAIL] all-reduce mismatch at {i}: {local0[i]} != 3.0")
+            return False
+    print("[PASS] all-reduce sum primitive produced expected output.\n")
+    return True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 5: Triton JIT Kernel on NUMA-Allocated Memory
 # ──────────────────────────────────────────────────────────────────────
 
 # The kernel must be defined at module level because @triton.jit captures
@@ -317,7 +385,7 @@ def test_jit_kernel_on_numa_memory(lib, numa_ptr, total_bytes):
     backend's JIT pipeline can handle our custom-allocated pointers.
     """
     print("=" * 60)
-    print("TEST 4: Triton JIT Kernel on NUMA Memory")
+    print("TEST 5: Triton JIT Kernel on NUMA Memory")
     print("=" * 60)
 
     if not _HAS_TRITON:
@@ -400,7 +468,10 @@ def main():
     # Test 3: Signaling
     results["signaling"] = test_signaling(lib)
 
-    # Test 4: JIT Kernel
+    # Test 4: Shared-memory all-reduce
+    results["allreduce"] = test_allreduce_sum(lib)
+
+    # Test 5: JIT Kernel
     if numa_ptr:
         results["jit_kernel"] = test_jit_kernel_on_numa_memory(lib, numa_ptr, total_bytes)
     else:

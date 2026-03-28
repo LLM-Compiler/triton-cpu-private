@@ -15,6 +15,7 @@
 ///===----------------------------------------------------------------------===//
 
 #include <atomic>
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -258,6 +259,57 @@ EXPORT void triton_numa_notify(int32_t signal_id, int32_t numa_dst) {
 #ifdef __linux__
   futex_wake(&signal, 1);
 #endif
+}
+
+/// Chunked shared-memory all-reduce (sum) for float32 local shards.
+///
+/// scratch must point to at least (num_shards * count) floats.
+/// out must point to count floats.
+/// signal_base uses two ranges:
+///   [signal_base + 1 .. signal_base + num_shards - 1] for arrival
+///   [signal_base + num_shards + 1 .. + 2*num_shards - 1] for completion
+EXPORT void triton_numa_allreduce_sum_f32(float *local, float *scratch, float *out,
+                                          int64_t count, int32_t shard_id,
+                                          int32_t num_shards,
+                                          int32_t signal_base) {
+  if (!local || !scratch || !out || count <= 0 || num_shards <= 0 ||
+      shard_id < 0 || shard_id >= num_shards) {
+    return;
+  }
+
+  float *my_slice = scratch + static_cast<int64_t>(shard_id) * count;
+  std::memcpy(my_slice, local, static_cast<size_t>(count) * sizeof(float));
+
+  // Arrival barrier
+  if (shard_id == 0) {
+    for (int32_t src = 1; src < num_shards; ++src) {
+      triton_numa_wait(signal_base + src);
+    }
+  } else {
+    triton_numa_notify(signal_base + shard_id, 0);
+  }
+
+  if (shard_id == 0) {
+    constexpr int64_t kChunkElems = 4096;
+    for (int64_t off = 0; off < count; off += kChunkElems) {
+      int64_t n = std::min<int64_t>(kChunkElems, count - off);
+      std::memcpy(out + off, scratch + off, static_cast<size_t>(n) * sizeof(float));
+      for (int32_t src = 1; src < num_shards; ++src) {
+        float *src_slice = scratch + static_cast<int64_t>(src) * count + off;
+        for (int64_t i = 0; i < n; ++i) {
+          out[off + i] += src_slice[i];
+        }
+      }
+    }
+
+    for (int32_t dst = 1; dst < num_shards; ++dst) {
+      triton_numa_notify(signal_base + num_shards + dst, dst);
+    }
+    std::memcpy(local, out, static_cast<size_t>(count) * sizeof(float));
+  } else {
+    triton_numa_wait(signal_base + num_shards + shard_id);
+    std::memcpy(local, out, static_cast<size_t>(count) * sizeof(float));
+  }
 }
 
 } // extern "C"

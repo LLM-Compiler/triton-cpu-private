@@ -1,4 +1,5 @@
 add_triton_library(TritonCPUTransforms
+    AnnotateNumaShardAttrs.cpp
     ConvertDotOp/ConvertDotCommon.cpp
     ConvertDotOp/ConvertDotGeneric.cpp
     ConvertDotOp/ConvertDotToAMX.cpp

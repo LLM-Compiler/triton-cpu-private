@@ -174,6 +174,18 @@ def ConvertDotGeneric : Pass<"triton-cpu-convert-dot-generic", "mlir::ModuleOp">
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def AnnotateNumaShardAttrs : Pass<"triton-cpu-annotate-numa-shard-attrs", "mlir::ModuleOp"> {
+    let summary = "Annotate TritonCPU dot ops with NUMA shard metadata.";
+    let description = [{
+        Attaches lightweight attributes to ttcpu.dot operations so downstream
+        launch/runtime components can recover intended tensor-parallel shard
+        semantics even after dot decomposition.
+    }];
+
+    let constructor = "mlir::triton::cpu::createAnnotateNumaShardAttrs()";
+    let dependentDialects = ["mlir::triton::cpu::TritonCPUDialect"];
+}
+
 def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {
     let summary = "Canonicalization pass.";
     let description = [{

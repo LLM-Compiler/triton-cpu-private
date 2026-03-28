@@ -4,6 +4,7 @@ import importlib
 import importlib.resources
 import tempfile
 import time
+import ctypes
 
 import triton
 import triton._C
@@ -69,13 +70,50 @@ class CPUUtils(object):
         return cls.instance
 
     def __init__(self):
-        pass
+        self._runtime = None
+        self._runtime_path = None
+        self._maybe_load_runtime()
+
+    def _maybe_load_runtime(self):
+        if self._runtime is not None:
+            return
+        runtime_env = os.getenv("TRITON_CPU_RUNTIME_LIBRARY")
+        candidates = []
+        if runtime_env:
+            candidates.append(runtime_env)
+        for lib_dir in library_dirs:
+            candidates.append(os.path.join(lib_dir, "libTritonCPURuntime.so"))
+            candidates.append(os.path.join(lib_dir, "TritonCPURuntime.so"))
+        for path in candidates:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                self._runtime = ctypes.CDLL(path)
+                self._runtime_path = path
+                break
+            except OSError:
+                continue
+        if self._runtime is None:
+            return
+        if hasattr(self._runtime, "triton_numa_pin_thread"):
+            self._runtime.triton_numa_pin_thread.argtypes = [ctypes.c_int32]
+            self._runtime.triton_numa_pin_thread.restype = None
+        if hasattr(self._runtime, "triton_numa_allreduce_sum_f32"):
+            self._runtime.triton_numa_allreduce_sum_f32.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_int64,
+                ctypes.c_int32,
+                ctypes.c_int32,
+                ctypes.c_int32,
+            ]
+            self._runtime.triton_numa_allreduce_sum_f32.restype = None
 
     def load_binary(self, name, kernel, shared_mem, device):
         with tempfile.NamedTemporaryFile(mode="wb", suffix=".so") as f:
             f.write(kernel)
             f.flush()
-            import ctypes
             lib = ctypes.cdll.LoadLibrary(f.name)
             fn_ptr = getattr(lib, name)
             fn_ptr_as_void_p = ctypes.cast(fn_ptr, ctypes.c_void_p).value
@@ -83,6 +121,47 @@ class CPUUtils(object):
 
     def get_device_properties(self, *args):
         return {"max_shared_mem": 0}
+
+    def pin_thread_to_numa_node(self, numa_node: int):
+        self._maybe_load_runtime()
+        if self._runtime is None or not hasattr(self._runtime, "triton_numa_pin_thread"):
+            return False
+        self._runtime.triton_numa_pin_thread(int(numa_node))
+        return True
+
+    def materialize_weight_shards_for_numa(
+        self, weight, num_shards: int = 2, split_dim: int = 0
+    ):
+        """
+        Prototype allocator path for NUMA-local parameter materialization.
+        Uses pin+first-touch for each shard to increase local DRAM placement.
+        """
+        import torch
+
+        if num_shards < 1:
+            raise ValueError("num_shards must be >= 1")
+        shards = torch.chunk(weight, chunks=num_shards, dim=split_dim)
+        local = []
+        for numa_node, shard in enumerate(shards):
+            self.pin_thread_to_numa_node(numa_node)
+            buf = torch.empty_like(shard, device="cpu")
+            buf.copy_(shard)
+            local.append(buf)
+        return tuple(local)
+
+    def allreduce_sum_f32(self, local, scratch, out, shard_id: int, num_shards: int, signal_base: int = 128):
+        self._maybe_load_runtime()
+        if self._runtime is None or not hasattr(self._runtime, "triton_numa_allreduce_sum_f32"):
+            raise RuntimeError("triton_numa_allreduce_sum_f32 is unavailable in Triton CPU runtime")
+        self._runtime.triton_numa_allreduce_sum_f32(
+            ctypes.c_void_p(local.data_ptr()),
+            ctypes.c_void_p(scratch.data_ptr()),
+            ctypes.c_void_p(out.data_ptr()),
+            ctypes.c_int64(int(local.numel())),
+            ctypes.c_int32(int(shard_id)),
+            ctypes.c_int32(int(num_shards)),
+            ctypes.c_int32(int(signal_base)),
+        )
 
 
 # ------------------------
@@ -182,6 +261,8 @@ def make_launcher(constants, signature, ids):
 #include <stdio.h>
 #include <string>
 #include <memory>
+#include <stdint.h>
+#include <dlfcn.h>
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
@@ -204,6 +285,46 @@ inline std::optional<int64_t> getIntEnv(const std::string &env) {{
   if (endptr == cstr)
     assert(false && "invalid integer");
   return result;
+}}
+
+using numa_pin_thread_t = void (*)(int32_t);
+
+inline numa_pin_thread_t lookup_numa_pin_thread() {{
+  static numa_pin_thread_t fn = nullptr;
+  static bool initialized = false;
+  if (!initialized) {{
+    initialized = true;
+    fn = reinterpret_cast<numa_pin_thread_t>(dlsym(RTLD_DEFAULT, "triton_numa_pin_thread"));
+  }}
+  return fn;
+}}
+
+inline int32_t pyobj_to_int32(PyObject *obj, int32_t default_value) {{
+  if (!obj || obj == Py_None || !PyLong_Check(obj)) {{
+    return default_value;
+  }}
+  return static_cast<int32_t>(PyLong_AsLong(obj));
+}}
+
+inline void parse_numa_launch_metadata(
+    PyObject *launch_metadata,
+    int32_t *numa_socket_id,
+    int32_t *numa_num_sockets,
+    int32_t *numa_enable_pin) {{
+  *numa_socket_id = -1;
+  *numa_num_sockets = 1;
+  *numa_enable_pin = 0;
+  if (!launch_metadata || launch_metadata == Py_None || !PyDict_Check(launch_metadata)) {{
+    return;
+  }}
+  *numa_socket_id = pyobj_to_int32(
+      PyDict_GetItemString(launch_metadata, "numa_socket_id"),
+      *numa_socket_id);
+  *numa_num_sockets = std::max<int32_t>(
+      1, pyobj_to_int32(PyDict_GetItemString(launch_metadata, "numa_num_sockets"), 1));
+  *numa_enable_pin = pyobj_to_int32(
+      PyDict_GetItemString(launch_metadata, "numa_enable_pin"),
+      *numa_num_sockets > 1 ? 1 : 0);
 }}
 
 using kernel_ptr_t = void(*)({kernel_fn_arg_types});
@@ -263,10 +384,34 @@ static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gri
   return grids;
 }}
 
-static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_threads, kernel_ptr_t kernel_ptr {(', ' + arg_decls) if len(arg_decls) > 0 else ''}) {{
+static void run_omp_kernels(
+    uint32_t gridX,
+    uint32_t gridY,
+    uint32_t gridZ,
+    int num_threads,
+    int32_t numa_socket_id,
+    int32_t numa_num_sockets,
+    int32_t numa_enable_pin,
+    kernel_ptr_t kernel_ptr {(', ' + arg_decls) if len(arg_decls) > 0 else ''}) {{
   // TODO: Consider using omp collapse(3) clause for simplicity?
   size_t N = gridX * gridY * gridZ;
+  size_t begin_idx = 0;
+  size_t end_idx = N;
+  if (numa_num_sockets > 1 && numa_socket_id >= 0) {{
+    begin_idx = (N * static_cast<size_t>(numa_socket_id)) / static_cast<size_t>(numa_num_sockets);
+    end_idx = (N * static_cast<size_t>(numa_socket_id + 1)) / static_cast<size_t>(numa_num_sockets);
+  }}
+  if (begin_idx >= end_idx) {{
+    return;
+  }}
+
   if (N == 1) {{
+      if (numa_enable_pin && numa_socket_id >= 0) {{
+        auto pin = lookup_numa_pin_thread();
+        if (pin) {{
+          pin(numa_socket_id);
+        }}
+      }}
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} 0, 0, 0, 1, 1, 1);
       return;
   }}
@@ -280,21 +425,44 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int 
 
   // Don't pay OMP overhead price when a single thread is used.
   if (max_threads == 1) {{
-    for (size_t i = 0; i < N; ++i) {{
+    if (numa_enable_pin && numa_socket_id >= 0) {{
+      auto pin = lookup_numa_pin_thread();
+      if (pin) {{
+        pin(numa_socket_id);
+      }}
+    }}
+    for (size_t i = begin_idx; i < end_idx; ++i) {{
       const auto [x, y, z] = all_grids[i];
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
     }}
     return;
   }}
 
-  // For now, use the default chunk size, total iterations / max_threads.
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) num_threads(max_threads)
-#endif // _OPENMP
-  for (size_t i = 0; i < N; ++i) {{
+#pragma omp parallel num_threads(max_threads)
+  {{
+    if (numa_enable_pin) {{
+      auto pin = lookup_numa_pin_thread();
+      if (pin) {{
+        int32_t target_socket = numa_socket_id >= 0
+            ? numa_socket_id
+            : static_cast<int32_t>((omp_get_thread_num() * numa_num_sockets) / std::max(1, max_threads));
+        target_socket = std::max<int32_t>(0, std::min<int32_t>(target_socket, numa_num_sockets - 1));
+        pin(target_socket);
+      }}
+    }}
+#pragma omp for schedule(static)
+    for (size_t i = begin_idx; i < end_idx; ++i) {{
+      const auto [x, y, z] = all_grids[i];
+      (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
+    }}
+  }}
+#else
+  for (size_t i = begin_idx; i < end_idx; ++i) {{
     const auto [x, y, z] = all_grids[i];
     (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
   }}
+#endif // _OPENMP
 }}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
@@ -321,6 +489,11 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *num_threads_attr = PyObject_GetAttrString(kernel_metadata, "num_threads");
   if (num_threads_attr && PyLong_Check(num_threads_attr))
     num_threads = PyLong_AsLong(num_threads_attr);
+  int32_t numa_socket_id = -1;
+  int32_t numa_num_sockets = 1;
+  int32_t numa_enable_pin = 0;
+  parse_numa_launch_metadata(
+      launch_metadata, &numa_socket_id, &numa_num_sockets, &numa_enable_pin);
 
   // extract launch metadata
   if (launch_enter_hook != Py_None){{
@@ -332,7 +505,15 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
 
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature_without_constexprs.items()])};
-  run_omp_kernels(gridX, gridY, gridZ, num_threads, kernel_ptr {(', ' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"arg{i}" for i, ty in signature_without_constexprs.items())) if len(signature_without_constexprs) > 0 else ''});
+  run_omp_kernels(
+      gridX,
+      gridY,
+      gridZ,
+      num_threads,
+      numa_socket_id,
+      numa_num_sockets,
+      numa_enable_pin,
+      kernel_ptr {(', ' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"arg{i}" for i, ty in signature_without_constexprs.items())) if len(signature_without_constexprs) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);

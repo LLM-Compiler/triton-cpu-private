@@ -196,6 +196,8 @@ class CPUBackend(BaseBackend):
         pm.enable_debug()
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
+        if int(os.getenv("TRITON_CPU_NUMA_SHARDS", "1")) > 1:
+            cpu.passes.ttcpuir.add_annotate_numa_shard_attrs(pm)
         passes.common.add_canonicalizer(pm)
         if (ukernels := opt.get_ukernels()):
             # For further analysis simplification
