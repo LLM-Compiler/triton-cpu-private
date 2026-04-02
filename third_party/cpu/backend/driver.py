@@ -177,6 +177,8 @@ def make_launcher(constants, signature, ids):
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
+#include <vector>
 #ifdef _OPENMP
 #include <omp.h>
 #endif // _OPENMP
@@ -184,6 +186,9 @@ def make_launcher(constants, signature, ids):
 #include <stdio.h>
 #include <string>
 #include <memory>
+#ifdef __linux__
+#include <sched.h>
+#endif // __linux__
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
@@ -206,6 +211,73 @@ inline std::optional<int64_t> getIntEnv(const std::string &env) {{
   if (endptr == cstr)
     assert(false && "invalid integer");
   return result;
+}}
+
+inline std::vector<std::string> split(const std::string& s, char delim) {{
+  std::vector<std::string> tokens;
+  std::stringstream ss(s);
+  std::string item;
+  while (std::getline(ss, item, delim)) {{
+    if (!item.empty()) {{
+      tokens.push_back(item);
+    }}
+  }}
+  return tokens;
+}}
+
+inline std::vector<int> parseCpuSetSpec(const std::string& spec) {{
+  std::vector<int> cpus;
+  for (const auto& token : split(spec, ',')) {{
+    auto dash_pos = token.find('-');
+    if (dash_pos == std::string::npos) {{
+      cpus.push_back(std::stoi(token));
+      continue;
+    }}
+    int begin = std::stoi(token.substr(0, dash_pos));
+    int end = std::stoi(token.substr(dash_pos + 1));
+    if (begin > end) {{
+      std::swap(begin, end);
+    }}
+    for (int c = begin; c <= end; ++c) {{
+      cpus.push_back(c);
+    }}
+  }}
+  return cpus;
+}}
+
+inline std::vector<std::vector<int>> getNumaCpuSetsFromEnv() {{
+  const char* raw = std::getenv("TRITON_CPU_NUMA_CPUSETS");
+  if (!raw || std::string(raw).empty()) {{
+    return {{}};
+  }}
+  std::vector<std::vector<int>> all_sets;
+  for (const auto& node_spec : split(std::string(raw), ';')) {{
+    all_sets.push_back(parseCpuSetSpec(node_spec));
+  }}
+  return all_sets;
+}}
+
+inline void maybePinThreadToNode(int node_id, const std::vector<std::vector<int>>& cpu_sets) {{
+#ifdef __linux__
+  if (cpu_sets.empty()) {{
+    return;
+  }}
+  if (node_id < 0 || node_id >= static_cast<int>(cpu_sets.size())) {{
+    return;
+  }}
+  if (cpu_sets[node_id].empty()) {{
+    return;
+  }}
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  for (int cpu : cpu_sets[node_id]) {{
+    CPU_SET(cpu, &mask);
+  }}
+  (void)sched_setaffinity(0, sizeof(mask), &mask);
+#else
+  (void)node_id;
+  (void)cpu_sets;
+#endif // __linux__
 }}
 
 using kernel_ptr_t = void(*)({kernel_fn_arg_types});
@@ -279,11 +351,21 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int 
   omp_max_threads = omp_get_max_threads();
   #endif // _OPENMP
   int max_threads = (num_threads > 0) ? num_threads : omp_max_threads;
+  bool pin_by_grid = getBoolEnv("TRITON_CPU_NUMA_PIN_BY_GRID");
+  bool pin_by_thread = getBoolEnv("TRITON_CPU_NUMA_PIN_BY_THREAD");
+  auto cpu_sets = (pin_by_grid || pin_by_thread) ? getNumaCpuSetsFromEnv() : std::vector<std::vector<int>>{{}};
 
   // Don't pay OMP overhead price when a single thread is used.
   if (max_threads == 1) {{
+    if (pin_by_grid && !cpu_sets.empty()) {{
+      maybePinThreadToNode(0, cpu_sets);
+    }}
     for (size_t i = 0; i < N; ++i) {{
       const auto [x, y, z] = all_grids[i];
+      if (pin_by_grid && !cpu_sets.empty()) {{
+        int node_id = static_cast<int>(x % cpu_sets.size());
+        maybePinThreadToNode(node_id, cpu_sets);
+      }}
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
     }}
     return;
@@ -295,6 +377,18 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int 
 #endif // _OPENMP
   for (size_t i = 0; i < N; ++i) {{
     const auto [x, y, z] = all_grids[i];
+    if (pin_by_thread && !cpu_sets.empty()) {{
+#ifdef _OPENMP
+      int tid = omp_get_thread_num();
+#else
+      int tid = 0;
+#endif
+      int node_id = tid % static_cast<int>(cpu_sets.size());
+      maybePinThreadToNode(node_id, cpu_sets);
+    }} else if (pin_by_grid && !cpu_sets.empty()) {{
+      int node_id = static_cast<int>(x % cpu_sets.size());
+      maybePinThreadToNode(node_id, cpu_sets);
+    }}
     (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
   }}
 }}
